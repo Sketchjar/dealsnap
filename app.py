@@ -136,6 +136,8 @@ class IncomeLine(BaseModel):
     semp_proof_of_lodgement: Optional[YesNo] = None
     semp_broker_rationale: Optional[str] = None
     semp_company_search_verified: Optional[YesNo] = None
+    income_frequency: Optional[str] = None
+    annual_amount: Optional[float] = None
 
 class IncomeSection(BaseModel):
     number_of_incomes: int
@@ -147,6 +149,8 @@ class ExpenseLine(BaseModel):
     zero_expenses_listed: Optional[str] = None
     discrepancies: Optional[str] = None
     commentary: Optional[str] = None
+    expense_category: Optional[str] = None
+    monthly_amount: Optional[float] = None
 
 class ExpenseSection(BaseModel):
     number_of_households: int
@@ -239,6 +243,46 @@ def section_header(title: str, help_text: Optional[str] = None):
     if help_text:
         st.caption(help_text)
     st.divider()
+
+def format_currency(value: float) -> str:
+    return f"${value:,.2f}"
+
+def render_submission_summary(payload: DealSnapshotForm) -> None:
+    total_loans = payload.loan_section.number_of_loans
+    total_amount = sum((loan.loan_amount or 0.0) for loan in payload.loan_section.loans)
+    applicant_names = ", ".join(a.name for a in payload.applicant_section.applicants if a.name) or "n/a"
+    guarantor_count = len(payload.applicant_section.guarantors)
+    hgs_flag = "Included" if payload.hgs_block else "Not included"
+    lmi_flag = "Included" if payload.lmi_block else "Not included"
+    total_annual_income = sum((inc.annual_amount or 0.0) for inc in payload.income_section.incomes)
+    total_monthly_income = total_annual_income / 12 if total_annual_income else 0.0
+    total_monthly_expenses = sum((exp.monthly_amount or 0.0) for exp in payload.expense_section.households)
+    net_monthly_position = total_monthly_income - total_monthly_expenses
+
+    st.markdown("### Submission at a Glance")
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.metric("Loans", str(total_loans))
+    with col_b:
+        st.metric("Total Loan Amount", format_currency(total_amount))
+    with col_c:
+        st.metric("Applicants", str(len(payload.applicant_section.applicants)))
+
+    col_d, col_e, col_f = st.columns(3)
+    with col_d:
+        st.metric("Annual Income", format_currency(total_annual_income))
+    with col_e:
+        st.metric("Monthly Expenses", format_currency(total_monthly_expenses))
+    with col_f:
+        st.metric("Net Monthly Position", format_currency(net_monthly_position))
+
+    st.write(f"Primary applicants: **{applicant_names}**")
+    st.write(f"Guarantors: **{guarantor_count}**")
+    if payload.income_section.income_summary:
+        st.caption(f"Income notes: {payload.income_section.income_summary}")
+    if payload.expense_section.expenses_notes_summary:
+        st.caption(f"Expense notes: {payload.expense_section.expenses_notes_summary}")
+    st.caption(f"HGS Block: {hgs_flag} · LMI Block: {lmi_flag}")
 
 # ===========================
 # Streamlit App
@@ -407,37 +451,129 @@ with st.form("deal_form", clear_on_submit=False):
 
     # 4) Income
     section_header("4. Income")
-    num_incomes = st.number_input("Number of income lines", min_value=0, step=1, value=0)
+    prefill_incomes = (prefill_data or {}).get("income_section", {}).get("incomes", [])
+    num_incomes_default = len(prefill_incomes)
+    num_incomes = int(
+        st.number_input(
+            "Number of income lines",
+            min_value=0,
+            step=1,
+            value=num_incomes_default
+        )
+    )
     incomes_payload: List[Dict[str, Any]] = []
     for i in range(num_incomes):
+        existing_income = prefill_incomes[i] if i < len(prefill_incomes) else {}
         st.markdown(f"**Income line {i+1}**")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            applicant_name = st.text_input(f"Income {i+1} – applicant")
+            applicant_name = st.text_input(
+                f"Income {i+1} – applicant",
+                value=existing_income.get("applicant", "")
+            )
         with c2:
-            income_type = st.text_input(f"Income {i+1} – income type")
+            income_type = st.text_input(
+                f"Income {i+1} – income type",
+                value=existing_income.get("income_type", "")
+            )
         with c3:
-            employment_type = st.text_input(f"Income {i+1} – employment type")
+            employment_type = st.text_input(
+                f"Income {i+1} – employment type",
+                value=existing_income.get("employment_type", "")
+            )
         with c4:
-            employment_basis = st.text_input(f"Income {i+1} – employment basis")
+            employment_basis = st.text_input(
+                f"Income {i+1} – employment basis",
+                value=existing_income.get("employment_basis", "")
+            )
         c5, c6, c7, c8 = st.columns(4)
         with c5:
-            start_date = st.text_input(f"Income {i+1} – employment start date (YYYY-MM-DD)")
+            start_date = st.text_input(
+                f"Income {i+1} – employment start date (YYYY-MM-DD)",
+                value=existing_income.get("employment_start_date", "")
+            )
         with c6:
-            docs_attached = st.text_input(f"Income {i+1} – income docs attached")
+            docs_attached = st.text_input(
+                f"Income {i+1} – income docs attached",
+                value=existing_income.get("income_docs_attached", "")
+            )
         with c7:
-            allowances = st.selectbox(f"Income {i+1} – allowances", enum_options(YesNo), index=1, key=f"al_{i}")
+            allowances_options = enum_options(YesNo)
+            allowances_default = existing_income.get("allowances", "No")
+            allowances_index = allowances_options.index(allowances_default) if allowances_default in allowances_options else 1
+            allowances = st.selectbox(
+                f"Income {i+1} – allowances",
+                allowances_options,
+                index=allowances_index,
+                key=f"al_{i}"
+            )
         with c8:
-            deductions = st.selectbox(f"Income {i+1} – deductions", enum_options(YesNo), index=1, key=f"de_{i}")
+            deductions_options = enum_options(YesNo)
+            deductions_default = existing_income.get("deductions", "No")
+            deductions_index = deductions_options.index(deductions_default) if deductions_default in deductions_options else 1
+            deductions = st.selectbox(
+                f"Income {i+1} – deductions",
+                deductions_options,
+                index=deductions_index,
+                key=f"de_{i}"
+            )
         c9, c10, c11 = st.columns(3)
         with c9:
-            verify_allow = st.selectbox(f"Income {i+1} – verification for allowances", enum_options(YesNo), index=1, key=f"va_{i}")
+            verify_options = enum_options(YesNo)
+            verify_default = existing_income.get("verification_for_allowances", "No")
+            verify_index = verify_options.index(verify_default) if verify_default in verify_options else 1
+            verify_allow = st.selectbox(
+                f"Income {i+1} – verification for allowances",
+                verify_options,
+                index=verify_index,
+                key=f"va_{i}"
+            )
         with c10:
-            proof_lodgement = st.selectbox(f"Income {i+1} – SEMP proof of lodgement", enum_options(YesNo), index=1, key=f"pl_{i}")
+            proof_options = enum_options(YesNo)
+            proof_default = existing_income.get("semp_proof_of_lodgement", "No")
+            proof_index = proof_options.index(proof_default) if proof_default in proof_options else 1
+            proof_lodgement = st.selectbox(
+                f"Income {i+1} – SEMP proof of lodgement",
+                proof_options,
+                index=proof_index,
+                key=f"pl_{i}"
+            )
         with c11:
-            company_search = st.selectbox(f"Income {i+1} – SEMP company search verified", enum_options(YesNo), index=1, key=f"csx_{i}")
-        flags = st.text_input(f"Income {i+1} – flags / notes")
-        broker_rationale = st.text_input(f"Income {i+1} – SEMP broker rationale")
+            company_options = enum_options(YesNo)
+            company_default = existing_income.get("semp_company_search_verified", "No")
+            company_index = company_options.index(company_default) if company_default in company_options else 1
+            company_search = st.selectbox(
+                f"Income {i+1} – SEMP company search verified",
+                company_options,
+                index=company_index,
+                key=f"csx_{i}"
+            )
+        flags = st.text_input(
+            f"Income {i+1} – flags / notes",
+            value=existing_income.get("flags", "")
+        )
+        broker_rationale = st.text_input(
+            f"Income {i+1} – SEMP broker rationale",
+            value=existing_income.get("semp_broker_rationale", "")
+        )
+        c12, c13 = st.columns(2)
+        with c12:
+            annual_amount = st.number_input(
+                f"Income {i+1} – annual amount (AUD)",
+                min_value=0.0,
+                step=1000.0,
+                value=float(existing_income.get("annual_amount", 0.0))
+            )
+        with c13:
+            frequency_options = ["Annual", "Monthly", "Fortnightly", "Weekly"]
+            freq_default = existing_income.get("income_frequency", "Annual")
+            freq_index = frequency_options.index(freq_default) if freq_default in frequency_options else 0
+            income_frequency = st.selectbox(
+                f"Income {i+1} – income frequency",
+                frequency_options,
+                index=freq_index,
+                key=f"freq_{i}"
+            )
         incomes_payload.append(dict(
             applicant=applicant_name,
             income_type=income_type,
@@ -452,30 +588,72 @@ with st.form("deal_form", clear_on_submit=False):
             semp_proof_of_lodgement=enum_from_value(YesNo, proof_lodgement),
             semp_broker_rationale=broker_rationale,
             semp_company_search_verified=enum_from_value(YesNo, company_search),
+            income_frequency=income_frequency,
+            annual_amount=annual_amount,
         ))
-    income_summary = st.text_area("Income summary", value="")
+    income_summary_default = (prefill_data or {}).get("income_section", {}).get("income_summary", "")
+    income_summary = st.text_area("Income summary", value=income_summary_default)
 
     # 5) Expenses
     section_header("5. Expenses")
-    num_households = st.number_input("Number of households (expense lines)", min_value=0, step=1, value=0)
+    prefill_expenses = (prefill_data or {}).get("expense_section", {}).get("households", [])
+    num_expenses_default = len(prefill_expenses)
+    num_households = int(
+        st.number_input(
+            "Number of households (expense lines)",
+            min_value=0,
+            step=1,
+            value=num_expenses_default
+        )
+    )
     expenses_payload: List[Dict[str, Any]] = []
     for i in range(num_households):
+        existing_expense = prefill_expenses[i] if i < len(prefill_expenses) else {}
         st.markdown(f"**Expense line {i+1}**")
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
-            fin_passport = st.text_input(f"Household {i+1} – financial passport run")
+            fin_passport = st.text_input(
+                f"Household {i+1} – financial passport run",
+                value=existing_expense.get("financial_passport_run", "")
+            )
         with c2:
-            zero_listed = st.text_input(f"Household {i+1} – SO responses/zero expenses listed")
+            zero_listed = st.text_input(
+                f"Household {i+1} – SO responses/zero expenses listed",
+                value=existing_expense.get("zero_expenses_listed", "")
+            )
         with c3:
-            discrepancies = st.text_input(f"Household {i+1} – discrepancies")
-        commentary = st.text_input(f"Household {i+1} – commentary related to flags")
+            discrepancies = st.text_input(
+                f"Household {i+1} – discrepancies",
+                value=existing_expense.get("discrepancies", "")
+            )
+        with c4:
+            expense_category = st.text_input(
+                f"Household {i+1} – expense category",
+                value=existing_expense.get("expense_category", "")
+            )
+        c5, c6 = st.columns(2)
+        with c5:
+            commentary = st.text_input(
+                f"Household {i+1} – commentary related to flags",
+                value=existing_expense.get("commentary", "")
+            )
+        with c6:
+            monthly_amount = st.number_input(
+                f"Household {i+1} – monthly amount (AUD)",
+                min_value=0.0,
+                step=100.0,
+                value=float(existing_expense.get("monthly_amount", 0.0))
+            )
         expenses_payload.append(dict(
             financial_passport_run=fin_passport,
             zero_expenses_listed=zero_listed,
             discrepancies=discrepancies,
-            commentary=commentary
+            commentary=commentary,
+            expense_category=expense_category,
+            monthly_amount=monthly_amount,
         ))
-    expenses_summary = st.text_area("Expenses notes summary", value="")
+    expenses_summary_default = (prefill_data or {}).get("expense_section", {}).get("expenses_notes_summary", "")
+    expenses_summary = st.text_area("Expenses notes summary", value=expenses_summary_default)
 
     # 6) Assets & Liabilities
     section_header("6. Assets & Liabilities")
@@ -660,6 +838,7 @@ if submitted:
         )
 
         st.success("Validation successful.")
+        render_submission_summary(payload)
         json_data = json.loads(payload.model_dump_json())
         st.json(json_data)
         st.download_button(
